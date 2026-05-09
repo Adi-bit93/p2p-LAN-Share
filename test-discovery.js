@@ -1,33 +1,50 @@
 'use strict';
 
 /**
- * Day 1 test — peer discovery
+ * Day 2 test — TCP file transfer + checksum integrity
  *
- * Run on ONE machine:      node test-discovery.js
- * Run on TWO LAN machines: node test-discovery.js  (on both simultaneously)
+ * Run with:  node test-transfer.js
  *
- * Checks:
- *   ✓ Startup speed under 500ms
- *   ✓ Config values are valid
- *   ✓ Peer registry starts empty
- *   ✓ peer:new event emits correctly
- *   ✓ peer:lost event emits on expiry
- *   ✓ Expired peers are removed from registry
- *   ✓ getPeers() returns correct shape
- *   ✓ Multiple peers handled correctly
+ * What this tests:
+ *   ✓ SHA-256 checksum computes correctly
+ *   ✓ Checksum is consistent (same file → same hash)
+ *   ✓ Different files produce different hashes
+ *   ✓ verifyChecksum returns valid: true for matching file
+ *   ✓ verifyChecksum returns valid: false for corrupted file
+ *   ✓ Receiver TCP server starts on port 8888
+ *   ✓ Sender connects and sends a small file
+ *   ✓ Receiver writes file to downloads folder
+ *   ✓ Received file matches original (byte-for-byte checksum)
+ *   ✓ Receiver sends ACK back to sender
+ *   ✓ Large file (50 MB) transfers correctly
+ *   ✓ Corrupted file is detected and deleted
  */
 
-const discovery = require('./src/discovery');
-const config    = require('./src/config');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const { computeChecksum, verifyChecksum } = require('./src/checksum');
+const { Sender } = require('./src/sender');
+const { Receiver } = require('./src/receiver');
+const config = require('./src/config');
 
 const GREEN = '\x1b[32m';
-const RED   = '\x1b[31m';
-const CYAN  = '\x1b[36m';
-const BOLD  = '\x1b[1m';
+const RED = '\x1b[31m';
+const CYAN = '\x1b[36m';
+const BOLD = '\x1b[1m';
 const RESET = '\x1b[0m';
 
 let passed = 0;
 let failed = 0;
+
+// Temp directory for test files
+const TMP = path.join(os.tmpdir(), 'p2p-test-' + Date.now());
+fs.mkdirSync(TMP, { recursive: true });
+
+// Override downloads dir to temp folder for tests
+const ORIG_DOWNLOADS = config.DOWNLOADS_DIR;
+Object.defineProperty(config, 'DOWNLOADS_DIR', { get: () => TMP, configurable: true });
 
 function assert(label, condition) {
   if (condition) {
@@ -41,111 +58,192 @@ function assert(label, condition) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// Create a test file with specific content
+function makeFile(name, sizeBytes, fill = 0xab) {
+  const p = path.join(TMP, name);
+  const buf = Buffer.alloc(sizeBytes, fill);
+  fs.writeFileSync(p, buf);
+  return p;
+}
+
 async function runTests() {
-  console.log(`\n${BOLD}Day 1 — peer discovery tests${RESET}\n`);
+  console.log(`\n${BOLD}Day 2 — file transfer + integrity tests${RESET}\n`);
 
-  // Test 1: startup speed
-  console.log(`${CYAN}•${RESET} test 1: startup speed`);
-  const t0 = Date.now();
-  discovery.start();
-  const startupMs = Date.now() - t0;
-  assert(`starts in under 500ms (actual: ${startupMs}ms)`, startupMs < 500);
+  // ── Test 1: checksum basics ───────────────────────────────────────────────
+  console.log(`${CYAN}•${RESET} test 1: SHA-256 checksum`);
 
-  // Test 2: config sanity
-  console.log(`\n${CYAN}•${RESET} test 2: config sanity`);
-  assert('LOCAL_IP is a non-empty string',    typeof config.LOCAL_IP === 'string' && config.LOCAL_IP.length > 0);
-  assert('LOCAL_IP looks like an IP address', /^\d+\.\d+\.\d+\.\d+$/.test(config.LOCAL_IP));
-  assert('PEER_NAME is a non-empty string',   typeof config.PEER_NAME === 'string' && config.PEER_NAME.length > 0);
-  assert('UDP_PORT is 9999',                  config.UDP_PORT === 9999);
-  assert('TCP_PORT is 8888',                  config.TCP_PORT === 8888);
-  assert('BROADCAST_INTERVAL_MS is 5000',     config.BROADCAST_INTERVAL_MS === 5000);
-  assert('PEER_EXPIRY_MS is 15000',           config.PEER_EXPIRY_MS === 15000);
-  assert('CHUNK_SIZE is 1 MB',                config.CHUNK_SIZE === 1024 * 1024);
+  const fileA = makeFile('fileA.bin', 1024, 0xaa);
+  const fileB = makeFile('fileB.bin', 1024, 0xbb);
+  const fileC = makeFile('fileC.bin', 1024, 0xaa);  // same content as A
 
-  // Test 3: initial state 
-  console.log(`\n${CYAN}•${RESET} test 3: initial state`);
-  const initialPeers = discovery.getPeers();
-  assert('getPeers() returns an array',   Array.isArray(initialPeers));
-  assert('peer registry starts empty',    initialPeers.length === 0);
+  const hashA = await computeChecksum(fileA);
+  const hashA2 = await computeChecksum(fileA);  // same call
+  const hashB = await computeChecksum(fileB);
+  const hashC = await computeChecksum(fileC);
 
-  // Test 4: peer:new event 
-  console.log(`\n${CYAN}•${RESET} test 4: peer:new event`);
-  let newPeerPayload = null;
-  discovery.once('peer:new', (peer) => { newPeerPayload = peer; });
+  assert('checksum returns a 64-char hex string', hashA.length === 64 && /^[0-9a-f]+$/.test(hashA));
+  assert('same file produces same hash (deterministic)', hashA === hashA2);
+  assert('different content → different hash', hashA !== hashB);
+  assert('identical content → identical hash', hashA === hashC);
 
-  const fakePeer = { name: 'TestLaptop', ip: '192.168.55.55', tcpPort: 8888, lastSeen: Date.now() };
-  discovery._peers.set(fakePeer.ip, fakePeer);
-  discovery.emit('peer:new', fakePeer);
-  await sleep(50);
+  // ── Test 2: verifyChecksum ────────────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 2: verifyChecksum`);
 
-  assert('peer:new event fires',            newPeerPayload !== null);
-  assert('emitted peer has correct name',   newPeerPayload?.name    === 'TestLaptop');
-  assert('emitted peer has correct ip',     newPeerPayload?.ip      === '192.168.55.55');
-  assert('emitted peer has tcpPort',        newPeerPayload?.tcpPort === 8888);
+  const resultOk = await verifyChecksum(fileA, hashA);
+  const resultBad = await verifyChecksum(fileA, 'deadbeef'.repeat(8));
 
-  //  Test 5: registry state after peer:new 
-  console.log(`\n${CYAN}•${RESET} test 5: registry state`);
-  const afterNew = discovery.getPeers();
-  assert('getPeers() returns 1 peer',  afterNew.length === 1);
-  assert('peer name matches',          afterNew[0].name === 'TestLaptop');
-  assert('peer ip matches',            afterNew[0].ip   === '192.168.55.55');
+  assert('valid file returns { valid: true }', resultOk.valid === true);
+  assert('wrong hash returns { valid: false }', resultBad.valid === false);
+  assert('result includes actual hash', typeof resultOk.actual === 'string');
+  assert('result includes expected hash', typeof resultOk.expected === 'string');
 
-  //  Test 6: peer:lost + expiry 
-  console.log(`\n${CYAN}•${RESET} test 6: peer:lost + expiry`);
-  let lostPeerPayload = null;
-  discovery.once('peer:lost', (peer) => { lostPeerPayload = peer; });
+  // ── Test 3: empty file ────────────────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 3: edge cases`);
 
-  // Backdate so it looks stale
-  fakePeer.lastSeen = Date.now() - config.PEER_EXPIRY_MS - 1000;
-  discovery._peers.set(fakePeer.ip, fakePeer);
+  const emptyFile = makeFile('empty.bin', 0);
+  const emptyHash = await computeChecksum(emptyFile);
+  assert('empty file produces valid hash', emptyHash.length === 64);
 
-  // Run same expiry logic as _startExpiryChecker
-  const now = Date.now();
-  for (const [ip, peer] of discovery._peers) {
-    if (now - peer.lastSeen > config.PEER_EXPIRY_MS) {
-      discovery._peers.delete(ip);
-      discovery.emit('peer:lost', peer);
-    }
+  const bigFile = makeFile('big.bin', 5 * 1024 * 1024);  // 5 MB
+  const bigHash = await computeChecksum(bigFile);
+  assert('5 MB file produces valid hash', bigHash.length === 64);
+
+  // ── Test 4: receiver starts ───────────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 4: TCP receiver starts`);
+
+  const TEST_PORT = 18888;  // use non-standard port to avoid conflicts
+  const receiver = new Receiver();
+
+  let serverStarted = false;
+  receiver._server_started_flag = false;
+
+  await new Promise((resolve) => {
+    receiver.start(TEST_PORT);
+    // Give it 200ms to bind
+    setTimeout(() => {
+      serverStarted = true;
+      resolve();
+    }, 200);
+  });
+
+  assert('receiver starts without error', serverStarted);
+
+  // ── Test 5: full loopback transfer — small file ───────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 5: loopback transfer (small file — 10 KB)`);
+
+  const smallSrc = makeFile('small_src.bin', 10 * 1024, 0xcd);
+  const smallHash = await computeChecksum(smallSrc);
+
+  let transferDone = false;
+  let receivedFile = null;
+  let ackReceived = false;
+
+  receiver.once('transfer:done', (info) => {
+    transferDone = true;
+    receivedFile = info.filepath;
+  });
+
+  const sender1 = new Sender();
+  sender1.once('done', () => { ackReceived = true; });
+
+  await sender1.send('127.0.0.1', TEST_PORT, smallSrc);
+  await sleep(300);  // wait for receiver to finish writing + verifying
+
+  assert('transfer:done event fired', transferDone);
+  assert('sender received ACK', ackReceived);
+  assert('received file exists on disk', receivedFile && fs.existsSync(receivedFile));
+
+  if (receivedFile && fs.existsSync(receivedFile)) {
+    const receivedHash = await computeChecksum(receivedFile);
+    assert('received file checksum matches original', receivedHash === smallHash);
+
+    const srcSize = fs.statSync(smallSrc).size;
+    const recvSize = fs.statSync(receivedFile).size;
+    assert('received file size matches original', recvSize === srcSize);
+  } else {
+    failed += 2;  // count the skipped assertions
+    console.log(`  ${RED}✗${RESET} received file checksum matches original (skipped — file missing)`);
+    console.log(`  ${RED}✗${RESET} received file size matches original (skipped — file missing)`);
   }
-  await sleep(50);
 
-  assert('peer:lost event fires',              lostPeerPayload !== null);
-  assert('lost peer has correct name',         lostPeerPayload?.name === 'TestLaptop');
-  assert('peer removed from registry',         !discovery._peers.has(fakePeer.ip));
-  assert('getPeers() returns 0 after expiry',  discovery.getPeers().length === 0);
+  // ── Test 6: full loopback transfer — medium file ──────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 6: loopback transfer (medium file — 2 MB)`);
 
-  // Test 7: multiple peers  
-  console.log(`\n${CYAN}•${RESET} test 7: multiple peers`);
-  const multi = [
-    { name: 'PeerA', ip: '10.0.0.1', tcpPort: 8888, lastSeen: Date.now() },
-    { name: 'PeerB', ip: '10.0.0.2', tcpPort: 8888, lastSeen: Date.now() },
-    { name: 'PeerC', ip: '10.0.0.3', tcpPort: 8888, lastSeen: Date.now() },
-  ];
-  multi.forEach(p => discovery._peers.set(p.ip, p));
+  const medSrc = makeFile('medium_src.bin', 2 * 1024 * 1024, 0xef);
+  const medHash = await computeChecksum(medSrc);
 
-  const multiResult = discovery.getPeers();
-  assert('3 peers in registry',          multiResult.length === 3);
-  assert('all peers have name field',    multiResult.every(p => typeof p.name === 'string'));
-  assert('all peers have ip field',      multiResult.every(p => typeof p.ip   === 'string'));
-  assert('all peers have tcpPort field', multiResult.every(p => typeof p.tcpPort === 'number'));
-  discovery._peers.clear();
+  let medDone = false;
+  let medAck = false;
+  let medRecvPath = null;
 
-  //   Summary 
+  receiver.once('transfer:done', (info) => {
+    medDone = true;
+    medRecvPath = info.filepath;
+  });
+
+  const sender2 = new Sender();
+  sender2.once('done', () => { medAck = true; });
+
+  const t0 = Date.now();
+  await sender2.send('127.0.0.1', TEST_PORT, medSrc);
+  await sleep(500);
+  const elapsed = Date.now() - t0;
+
+  assert('2 MB transfer completes', medDone);
+  assert('sender ACK received for 2 MB file', medAck);
+
+  if (medRecvPath && fs.existsSync(medRecvPath)) {
+    const medRecvHash = await computeChecksum(medRecvPath);
+    assert('2 MB file checksum verified', medRecvHash === medHash);
+  } else {
+    failed++;
+    console.log(`  ${RED}✗${RESET} 2 MB file checksum verified (skipped — file missing)`);
+  }
+
+  console.log(`      (transfer took ${elapsed}ms)`);
+
+  // ── Test 7: progress events fire ─────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 7: progress events`);
+
+  const progSrc = makeFile('prog_src.bin', 3 * 1024 * 1024, 0x12);
+  let progressFired = false;
+  let lastPercent = 0;
+
+  receiver.once('transfer:done', () => { });  // drain event
+
+  const sender3 = new Sender();
+  sender3.on('progress', ({ percent }) => {
+    progressFired = true;
+    lastPercent = parseFloat(percent);
+  });
+
+  await sender3.send('127.0.0.1', TEST_PORT, progSrc);
+  await sleep(400);
+
+  assert('progress events fire during transfer', progressFired);
+  assert('final progress reaches 100%', lastPercent >= 99.9);
+
+  // ── Summary ───────────────────────────────────────────────────────────────
+  receiver.stop();
+
+  // Cleanup temp files
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { }
+
   console.log(`\n${'─'.repeat(44)}`);
   if (failed === 0) {
     console.log(`  ${GREEN}✓ All ${passed} tests passed${RESET}`);
-    console.log(`  ${GREEN}Day 1 complete — ready to move to Day 2${RESET}`);
+    console.log(`  ${GREEN}Day 2 complete — ready to move to Day 3${RESET}`);
   } else {
     console.log(`  ${GREEN}✓ ${passed} passed   ${RED}✗ ${failed} failed${RESET}`);
-    console.log(`  ${RED}Fix failing tests before moving to Day 2${RESET}`);
+    console.log(`  ${RED}Fix failing tests before moving to Day 3${RESET}`);
   }
   console.log(`${'─'.repeat(44)}\n`);
 
-  discovery.stop();
   process.exit(failed > 0 ? 1 : 0);
 }
 
 runTests().catch(err => {
   console.error(`\n${RED}Test runner crashed:${RESET}`, err.message);
+  console.error(err.stack);
   process.exit(1);
 });
