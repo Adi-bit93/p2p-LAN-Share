@@ -1,50 +1,42 @@
 'use strict';
 
 /**
- * Day 2 test — TCP file transfer + checksum integrity
+ * Day 3 test — concurrency, retry logic, queue, stats
  *
- * Run with:  node test-transfer.js
+ * Run with:  node test-concurrency.js
  *
  * What this tests:
- *   ✓ SHA-256 checksum computes correctly
- *   ✓ Checksum is consistent (same file → same hash)
- *   ✓ Different files produce different hashes
- *   ✓ verifyChecksum returns valid: true for matching file
- *   ✓ verifyChecksum returns valid: false for corrupted file
- *   ✓ Receiver TCP server starts on port 8888
- *   ✓ Sender connects and sends a small file
- *   ✓ Receiver writes file to downloads folder
- *   ✓ Received file matches original (byte-for-byte checksum)
- *   ✓ Receiver sends ACK back to sender
- *   ✓ Large file (50 MB) transfers correctly
- *   ✓ Corrupted file is detected and deleted
+ *   ✓ TransferQueue starts and reports correct initial status
+ *   ✓ Single job enqueues and completes via loopback
+ *   ✓ 3 concurrent jobs all complete (parallel transfers)
+ *   ✓ All 3 concurrent files pass checksum verification
+ *   ✓ Failed job retries automatically (up to MAX_RETRIES)
+ *   ✓ job:done event fires with correct metadata
+ *   ✓ job:failed fires after all retries exhausted
+ *   ✓ Stats records sent/received/failed correctly
+ *   ✓ Stats snapshot returns correct shape
+ *   ✓ App startup still under 500ms with queue + stats loaded
  */
 
-const fs = require('fs');
+const fs   = require('fs');
 const path = require('path');
-const os = require('os');
+const os   = require('os');
+const net  = require('net');
 
-const { computeChecksum, verifyChecksum } = require('./src/checksum');
-const { Sender } = require('./src/sender');
-const { Receiver } = require('./src/receiver');
-const config = require('./src/config');
+const { TransferQueue } = require('./src/queue');
+const { Receiver }      = require('./src/receiver');
+const { computeChecksum } = require('./src/checksum');
+const stats             = require('./src/stats');
+const config            = require('./src/config');
 
 const GREEN = '\x1b[32m';
-const RED = '\x1b[31m';
-const CYAN = '\x1b[36m';
-const BOLD = '\x1b[1m';
+const RED   = '\x1b[31m';
+const CYAN  = '\x1b[36m';
+const BOLD  = '\x1b[1m';
 const RESET = '\x1b[0m';
 
 let passed = 0;
 let failed = 0;
-
-// Temp directory for test files
-const TMP = path.join(os.tmpdir(), 'p2p-test-' + Date.now());
-fs.mkdirSync(TMP, { recursive: true });
-
-// Override downloads dir to temp folder for tests
-const ORIG_DOWNLOADS = config.DOWNLOADS_DIR;
-Object.defineProperty(config, 'DOWNLOADS_DIR', { get: () => TMP, configurable: true });
 
 function assert(label, condition) {
   if (condition) {
@@ -58,184 +50,218 @@ function assert(label, condition) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Create a test file with specific content
+// ── Temp directory setup ──────────────────────────────────────────────────────
+const TMP = path.join(os.tmpdir(), 'p2p-day3-' + Date.now());
+fs.mkdirSync(TMP, { recursive: true });
+
+// Override downloads dir so test files don't go into real downloads folder
+Object.defineProperty(config, 'DOWNLOADS_DIR', { get: () => TMP, configurable: true });
+
 function makeFile(name, sizeBytes, fill = 0xab) {
   const p = path.join(TMP, name);
-  const buf = Buffer.alloc(sizeBytes, fill);
-  fs.writeFileSync(p, buf);
+  fs.writeFileSync(p, Buffer.alloc(sizeBytes, fill));
   return p;
 }
 
+// ── Test port (avoid conflict with real app) ──────────────────────────────────
+const TEST_PORT = 19888;
+
 async function runTests() {
-  console.log(`\n${BOLD}Day 2 — file transfer + integrity tests${RESET}\n`);
+  console.log(`\n${BOLD}Day 3 — concurrency, retry, queue, stats tests${RESET}\n`);
 
-  // ── Test 1: checksum basics ───────────────────────────────────────────────
-  console.log(`${CYAN}•${RESET} test 1: SHA-256 checksum`);
-
-  const fileA = makeFile('fileA.bin', 1024, 0xaa);
-  const fileB = makeFile('fileB.bin', 1024, 0xbb);
-  const fileC = makeFile('fileC.bin', 1024, 0xaa);  // same content as A
-
-  const hashA = await computeChecksum(fileA);
-  const hashA2 = await computeChecksum(fileA);  // same call
-  const hashB = await computeChecksum(fileB);
-  const hashC = await computeChecksum(fileC);
-
-  assert('checksum returns a 64-char hex string', hashA.length === 64 && /^[0-9a-f]+$/.test(hashA));
-  assert('same file produces same hash (deterministic)', hashA === hashA2);
-  assert('different content → different hash', hashA !== hashB);
-  assert('identical content → identical hash', hashA === hashC);
-
-  // ── Test 2: verifyChecksum ────────────────────────────────────────────────
-  console.log(`\n${CYAN}•${RESET} test 2: verifyChecksum`);
-
-  const resultOk = await verifyChecksum(fileA, hashA);
-  const resultBad = await verifyChecksum(fileA, 'deadbeef'.repeat(8));
-
-  assert('valid file returns { valid: true }', resultOk.valid === true);
-  assert('wrong hash returns { valid: false }', resultBad.valid === false);
-  assert('result includes actual hash', typeof resultOk.actual === 'string');
-  assert('result includes expected hash', typeof resultOk.expected === 'string');
-
-  // ── Test 3: empty file ────────────────────────────────────────────────────
-  console.log(`\n${CYAN}•${RESET} test 3: edge cases`);
-
-  const emptyFile = makeFile('empty.bin', 0);
-  const emptyHash = await computeChecksum(emptyFile);
-  assert('empty file produces valid hash', emptyHash.length === 64);
-
-  const bigFile = makeFile('big.bin', 5 * 1024 * 1024);  // 5 MB
-  const bigHash = await computeChecksum(bigFile);
-  assert('5 MB file produces valid hash', bigHash.length === 64);
-
-  // ── Test 4: receiver starts ───────────────────────────────────────────────
-  console.log(`\n${CYAN}•${RESET} test 4: TCP receiver starts`);
-
-  const TEST_PORT = 18888;  // use non-standard port to avoid conflicts
+  // ── Start a shared receiver for all transfer tests ────────────────────────
   const receiver = new Receiver();
+  receiver.start(TEST_PORT);
+  await sleep(200);
 
-  let serverStarted = false;
-  receiver._server_started_flag = false;
+  // ── Test 1: startup speed with all modules loaded ─────────────────────────
+  console.log(`${CYAN}•${RESET} test 1: startup speed (all modules)`);
+  const t0 = Date.now();
+  const _q = new TransferQueue();
+  const _s = require('./src/stats');
+  const elapsed = Date.now() - t0;
+  assert(`all modules load in under 200ms (actual: ${elapsed}ms)`, elapsed < 200);
+
+  // ── Test 2: queue initial state ───────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 2: queue initial state`);
+  const queue = new TransferQueue();
+  const initStatus = queue.status();
+  assert('pending starts at 0',       initStatus.pending === 0);
+  assert('active starts at 0',        initStatus.active  === 0);
+  assert('stats.totalSent starts 0',  initStatus.stats.totalSent   === 0);
+  assert('stats.totalFailed starts 0',initStatus.stats.totalFailed === 0);
+
+  // ── Test 3: single job completes ─────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 3: single job — enqueue and complete`);
+
+  const file1     = makeFile('job1.bin', 512 * 1024, 0x11);  // 512 KB
+  const hash1     = await computeChecksum(file1);
+
+  let job1Done    = false;
+  let job1Id      = null;
+  let job1DurationMs = 0;
+
+  receiver.once('transfer:done', () => {});  // drain
 
   await new Promise((resolve) => {
-    receiver.start(TEST_PORT);
-    // Give it 200ms to bind
-    setTimeout(() => {
-      serverStarted = true;
+    queue.once('job:done', (info) => {
+      job1Done       = true;
+      job1DurationMs = info.durationMs;
       resolve();
-    }, 200);
+    });
+    job1Id = queue.enqueue('127.0.0.1', TEST_PORT, file1, 'job1.bin', 512 * 1024);
   });
 
-  assert('receiver starts without error', serverStarted);
+  assert('job returns a numeric ID',          typeof job1Id === 'number');
+  assert('job:done event fires',              job1Done);
+  assert('duration is a positive number',     job1DurationMs > 0);
 
-  // ── Test 5: full loopback transfer — small file ───────────────────────────
-  console.log(`\n${CYAN}•${RESET} test 5: loopback transfer (small file — 10 KB)`);
-
-  const smallSrc = makeFile('small_src.bin', 10 * 1024, 0xcd);
-  const smallHash = await computeChecksum(smallSrc);
-
-  let transferDone = false;
-  let receivedFile = null;
-  let ackReceived = false;
-
-  receiver.once('transfer:done', (info) => {
-    transferDone = true;
-    receivedFile = info.filepath;
-  });
-
-  const sender1 = new Sender();
-  sender1.once('done', () => { ackReceived = true; });
-
-  await sender1.send('127.0.0.1', TEST_PORT, smallSrc);
-  await sleep(300);  // wait for receiver to finish writing + verifying
-
-  assert('transfer:done event fired', transferDone);
-  assert('sender received ACK', ackReceived);
-  assert('received file exists on disk', receivedFile && fs.existsSync(receivedFile));
-
-  if (receivedFile && fs.existsSync(receivedFile)) {
-    const receivedHash = await computeChecksum(receivedFile);
-    assert('received file checksum matches original', receivedHash === smallHash);
-
-    const srcSize = fs.statSync(smallSrc).size;
-    const recvSize = fs.statSync(receivedFile).size;
-    assert('received file size matches original', recvSize === srcSize);
-  } else {
-    failed += 2;  // count the skipped assertions
-    console.log(`  ${RED}✗${RESET} received file checksum matches original (skipped — file missing)`);
-    console.log(`  ${RED}✗${RESET} received file size matches original (skipped — file missing)`);
-  }
-
-  // ── Test 6: full loopback transfer — medium file ──────────────────────────
-  console.log(`\n${CYAN}•${RESET} test 6: loopback transfer (medium file — 2 MB)`);
-
-  const medSrc = makeFile('medium_src.bin', 2 * 1024 * 1024, 0xef);
-  const medHash = await computeChecksum(medSrc);
-
-  let medDone = false;
-  let medAck = false;
-  let medRecvPath = null;
-
-  receiver.once('transfer:done', (info) => {
-    medDone = true;
-    medRecvPath = info.filepath;
-  });
-
-  const sender2 = new Sender();
-  sender2.once('done', () => { medAck = true; });
-
-  const t0 = Date.now();
-  await sender2.send('127.0.0.1', TEST_PORT, medSrc);
-  await sleep(500);
-  const elapsed = Date.now() - t0;
-
-  assert('2 MB transfer completes', medDone);
-  assert('sender ACK received for 2 MB file', medAck);
-
-  if (medRecvPath && fs.existsSync(medRecvPath)) {
-    const medRecvHash = await computeChecksum(medRecvPath);
-    assert('2 MB file checksum verified', medRecvHash === medHash);
+  // Verify received file integrity
+  const recvPath1 = path.join(TMP, 'job1.bin');
+  if (fs.existsSync(recvPath1)) {
+    const recvHash1 = await computeChecksum(recvPath1);
+    assert('received file checksum matches',  recvHash1 === hash1);
   } else {
     failed++;
-    console.log(`  ${RED}✗${RESET} 2 MB file checksum verified (skipped — file missing)`);
+    console.log(`  ${RED}✗${RESET} received file checksum matches (file missing)`);
   }
 
-  console.log(`      (transfer took ${elapsed}ms)`);
+  // ── Test 4: 3 concurrent jobs ─────────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 4: 3 concurrent jobs`);
 
-  // ── Test 7: progress events fire ─────────────────────────────────────────
-  console.log(`\n${CYAN}•${RESET} test 7: progress events`);
+  // Use different fill bytes so each file has a unique checksum
+  const file2 = makeFile('job2.bin', 1 * 1024 * 1024, 0x22);  // 1 MB
+  const file3 = makeFile('job3.bin', 1 * 1024 * 1024, 0x33);  // 1 MB
+  const file4 = makeFile('job4.bin', 1 * 1024 * 1024, 0x44);  // 1 MB
 
-  const progSrc = makeFile('prog_src.bin', 3 * 1024 * 1024, 0x12);
-  let progressFired = false;
-  let lastPercent = 0;
+  const [hash2, hash3, hash4] = await Promise.all([
+    computeChecksum(file2),
+    computeChecksum(file3),
+    computeChecksum(file4),
+  ]);
 
-  receiver.once('transfer:done', () => { });  // drain event
+  const queue2   = new TransferQueue();
+  const doneSeen = new Set();
+  let allDoneResolve;
 
-  const sender3 = new Sender();
-  sender3.on('progress', ({ percent }) => {
-    progressFired = true;
-    lastPercent = parseFloat(percent);
+  const allDone = new Promise(r => { allDoneResolve = r; });
+
+  queue2.on('job:done', (info) => {
+    doneSeen.add(info.id);
+    if (doneSeen.size === 3) allDoneResolve();
   });
 
-  await sender3.send('127.0.0.1', TEST_PORT, progSrc);
-  await sleep(400);
+  // Drain receiver events
+  let recvCount = 0;
+  receiver.on('transfer:done', () => { recvCount++; });
 
-  assert('progress events fire during transfer', progressFired);
-  assert('final progress reaches 100%', lastPercent >= 99.9);
+  const tConcurrent = Date.now();
+
+  // Enqueue all 3 at once — they should run in parallel
+  const id2 = queue2.enqueue('127.0.0.1', TEST_PORT, file2, 'job2.bin', 1024 * 1024);
+  const id3 = queue2.enqueue('127.0.0.1', TEST_PORT, file3, 'job3.bin', 1024 * 1024);
+  const id4 = queue2.enqueue('127.0.0.1', TEST_PORT, file4, 'job4.bin', 1024 * 1024);
+
+  await Promise.race([allDone, sleep(15000)]);
+  const concurrentMs = Date.now() - tConcurrent;
+
+  assert('all 3 jobs completed',             doneSeen.size === 3);
+  assert('job IDs are all unique',            new Set([id2, id3, id4]).size === 3);
+  assert('completed within 15s',             concurrentMs < 15000);
+
+  console.log(`      (3 × 1 MB concurrent took ${concurrentMs}ms)`);
+
+  // Verify all 3 received files
+  await sleep(500); // let writes flush
+  for (const [name, expectedHash] of [['job2.bin', hash2], ['job3.bin', hash3], ['job4.bin', hash4]]) {
+    const p = path.join(TMP, name);
+    if (fs.existsSync(p)) {
+      const h = await computeChecksum(p);
+      assert(`${name} checksum verified`, h === expectedHash);
+    } else {
+      failed++;
+      console.log(`  ${RED}✗${RESET} ${name} checksum verified (file missing)`);
+    }
+  }
+
+  // ── Test 5: retry logic ───────────────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 5: retry logic`);
+
+  const queue3    = new TransferQueue();
+  let   attempts  = 0;
+  let   failedEvt = null;
+
+  // Use a port nobody is listening on — guaranteed to fail every attempt
+  const DEAD_PORT = 19999;
+
+  await new Promise((resolve) => {
+    queue3.once('job:failed', (info) => {
+      failedEvt = info;
+      resolve();
+    });
+
+    // Listen to job:start to count attempts
+    queue3.on('job:start', () => { attempts++; });
+
+    queue3.enqueue('127.0.0.1', DEAD_PORT, file1, 'retry-test.bin', 512 * 1024);
+  });
+
+  assert('job:failed event fires',                  failedEvt !== null);
+  assert('failed event has filename',               failedEvt?.filename === 'retry-test.bin');
+  assert('failed event has reason',                 typeof failedEvt?.reason === 'string');
+  assert(`retried ${config.MAX_RETRIES} time(s)`,  attempts === config.MAX_RETRIES + 1);
+  assert('attempts count in event matches',         failedEvt?.attempts === config.MAX_RETRIES + 1);
+
+  // ── Test 6: stats module ──────────────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 6: stats module`);
+
+  stats.recordSent({     filename: 'a.zip', peer: '10.0.0.1', bytes: 5 * 1024 * 1024, durationMs: 1000 });
+  stats.recordSent({     filename: 'b.zip', peer: '10.0.0.2', bytes: 2 * 1024 * 1024, durationMs: 500  });
+  stats.recordReceived({ filename: 'c.zip', peer: '10.0.0.3', bytes: 8 * 1024 * 1024, durationMs: 2000 });
+  stats.recordFailure({  filename: 'd.zip', peer: '10.0.0.4', attempts: 4 });
+
+  assert('sent count is 2',              stats.sent     === 2);
+  assert('received count is 1',          stats.received === 1);
+  assert('failed count is 1',            stats.failed   === 1);
+  assert('retries count is 3',           stats.retries  === 3);  // 4 attempts - 1
+  assert('bytesSent is 7 MB',            stats.bytesSent === 7 * 1024 * 1024);
+  assert('bytesReceived is 8 MB',        stats.bytesReceived === 8 * 1024 * 1024);
+  assert('peakSpeedMBps is set',         stats.peakSpeedMBps > 0);
+
+  const snap = stats.snapshot();
+  assert('snapshot() returns object',    typeof snap === 'object');
+  assert('snapshot has sent field',      typeof snap.sent          === 'number');
+  assert('snapshot has received field',  typeof snap.received      === 'number');
+  assert('snapshot has bytesSent field', typeof snap.bytesSent     === 'number');
+  assert('snapshot has recentTransfers', Array.isArray(snap.recentTransfers));
+
+  // ── Test 7: queue:empty event ─────────────────────────────────────────────
+  console.log(`\n${CYAN}•${RESET} test 7: queue:empty event`);
+
+  const queue4   = new TransferQueue();
+  let emptyFired = false;
+
+  await new Promise((resolve) => {
+    queue4.once('queue:empty', () => { emptyFired = true; resolve(); });
+    queue4.once('job:done',    () => {});  // drain
+    queue4.enqueue('127.0.0.1', TEST_PORT, file1, 'empty-test.bin', 512 * 1024);
+  });
+
+  await sleep(200);
+  assert('queue:empty fires after all jobs finish', emptyFired);
+
+  // ── Cleanup ───────────────────────────────────────────────────────────────
+  receiver.stop();
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
 
   // ── Summary ───────────────────────────────────────────────────────────────
-  receiver.stop();
-
-  // Cleanup temp files
-  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { }
-
   console.log(`\n${'─'.repeat(44)}`);
   if (failed === 0) {
     console.log(`  ${GREEN}✓ All ${passed} tests passed${RESET}`);
-    console.log(`  ${GREEN}Day 2 complete — ready to move to Day 3${RESET}`);
+    console.log(`  ${GREEN}Day 3 complete — ready to move to Day 4${RESET}`);
   } else {
     console.log(`  ${GREEN}✓ ${passed} passed   ${RED}✗ ${failed} failed${RESET}`);
-    console.log(`  ${RED}Fix failing tests before moving to Day 3${RESET}`);
+    console.log(`  ${RED}Fix failing tests before moving to Day 4${RESET}`);
   }
   console.log(`${'─'.repeat(44)}\n`);
 
