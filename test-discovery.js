@@ -23,9 +23,9 @@ const path = require('path');
 const os   = require('os');
 const net  = require('net');
 
-const { TransferQueue } = require('./src/queue');
-const { Receiver }      = require('./src/receiver');
-const { computeChecksum } = require('./src/checksum');
+const { TransferQueue } = require('./src/queue.js');
+const { Receiver }      = require('./src/receiver.js');
+const { computeChecksum } = require('./src/checksum.js');
 const stats             = require('./src/stats');
 const config            = require('./src/config');
 
