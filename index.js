@@ -35,9 +35,18 @@ logger.info('main', '───────────────────�
 // ─── Discovery ────────────────────────────────────────────────────────────────
 discovery.start();
 
+// Broadcast scan events to UI
+discovery.on('scan:start',    ()    => bridge.broadcast('scan:start', {}));
+discovery.on('scan:complete', (d)   => bridge.broadcast('scan:complete', d));
+
 discovery.on('peer:new', (p) => {
   logger.success('main', `peer joined → "${p.name}" @ ${p.ip}`);
   bridge.broadcast('peer:new', p);
+  bridge.broadcast('peers', discovery.getPeers());
+});
+
+discovery.on('peer:update', (p) => {
+  bridge.broadcast('peer:update', p);
   bridge.broadcast('peers', discovery.getPeers());
 });
 
