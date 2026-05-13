@@ -17,6 +17,9 @@ const BROADCAST_ADDR          = '255.255.255.255';
 const CHUNK_SIZE     = 1024 * 1024;  // 1 MB read buffer
 const DOWNLOADS_DIR  = require('path').join(__dirname, '..', 'downloads');
 const MAX_RETRIES    = 3;
+const ENCRYPTION_PASSPHRASE = 'temp-secret-key';
+const ENCRYPTION_ALGO = 'aes-256-gcm';
+const ENCRYPTION_ENABLED = true;
 
 // Identity 
 function getLocalIP() {
@@ -48,4 +51,7 @@ module.exports = {
   MAX_RETRIES,
   LOCAL_IP,
   PEER_NAME,
+  ENCRYPTION_PASSPHRASE,
+  ENCRYPTION_ALGO,
+  ENCRYPTION_ENABLED
 };
