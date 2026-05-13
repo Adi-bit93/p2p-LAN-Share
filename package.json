@@ -1,13 +1,15 @@
 {
-  "name": "p2p-lan-share",
+  "name": "p2p-share",
   "version": "1.0.0",
-  "description": "Fast P2P file sharing over LAN — UDP discovery + TCP transfer",
+  "description": "Fast encrypted P2P file sharing over LAN — UDP discovery, TCP transfer, AES-256-GCM",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test:day1": "node test-discovery.js",
-    "test:day2": "node test-transfer.js",
-    "test:all": "node test-discovery.js && node test-transfer.js"
+    "test:day3": "node test-concurrency.js",
+    "test:day4": "node test-ui.js",
+    "test:day5": "node test-e2e.js",
+    "test:all": "node test-discovery.js && node test-ui.js && node test-e2e.js"
   },
   "keywords": [],
   "author": "",

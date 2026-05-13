@@ -5,86 +5,110 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>P2P Share</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
-
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
   :root {
-    --bg:      #0a0a0a;
-    --surface: #111111;
-    --border:  #1e1e1e;
-    --accent:  #00ff88;
-    --blue:    #0099ff;
-    --danger:  #ff4444;
-    --warn:    #ffaa00;
-    --text:    #e0e0e0;
-    --muted:   #555;
+    --bg:      #0a0a0a; --surface: #111; --border: #1e1e1e;
+    --accent:  #00ff88; --blue: #0099ff; --danger: #ff4444;
+    --warn:    #ffaa00; --text: #e0e0e0; --muted: #555;
     --font:    'JetBrains Mono', monospace;
   }
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; overflow: hidden; }
 
-  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; line-height: 1.5; overflow: hidden; }
+  .app { display: grid; grid-template-rows: 44px 1fr; grid-template-columns: 280px 1fr; height: 100vh; }
 
-  /* ── Layout ── */
-  .app { display: grid; grid-template-rows: 44px 1fr; grid-template-columns: 240px 1fr; height: 100vh; }
-
-  /* ── Topbar ── */
+  /* Topbar */
   .topbar { grid-column: 1/-1; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
   .logo { font-size: 13px; font-weight: 700; color: var(--accent); letter-spacing: .1em; text-transform: uppercase; }
   .top-info { font-size: 11px; color: var(--muted); }
   .top-info span { color: var(--text); }
+  .enc-pill { font-size: 9px; color: var(--accent); opacity: .5; border: 1px solid rgba(0,255,136,.2); border-radius: 10px; padding: 1px 7px; }
   .top-status { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--danger); transition: background .3s; }
   .dot.on { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-  .enc-pill { margin-left: 8px; font-size: 9px; color: var(--accent); opacity: .5; border: 1px solid rgba(0,255,136,.2); border-radius: 10px; padding: 1px 7px; letter-spacing: .05em; }
+  .scan-badge { font-size: 10px; color: var(--warn); display: none; }
+  .scan-badge.show { display: inline; }
 
-  /* ── Sidebar ── */
+  /* Sidebar */
   .sidebar { border-right: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; overflow: hidden; }
-  .sh { padding: 12px 14px 8px; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-  .badge { background: var(--border); border-radius: 10px; padding: 1px 7px; font-size: 10px; color: var(--text); }
+
+  .sh { padding: 10px 14px 8px; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .sh-counts { display: flex; gap: 6px; align-items: center; }
+  .badge { border-radius: 10px; padding: 1px 7px; font-size: 10px; }
+  .badge-p2p  { background: rgba(0,255,136,.15); color: var(--accent); border: 1px solid rgba(0,255,136,.3); }
+  .badge-all  { background: var(--border); color: var(--muted); }
+
+  /* Filter tabs */
+  .filter-tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tab { flex: 1; padding: 7px 4px; text-align: center; font-size: 10px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }
+  .tab.active { color: var(--accent); border-color: var(--accent); }
+  .tab:hover:not(.active) { color: var(--text); }
+
+  /* Scan button */
+  .scan-btn { margin: 8px 14px 0; padding: 6px 10px; background: none; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-family: var(--font); font-size: 10px; cursor: pointer; text-align: left; transition: border-color .15s, color .15s; display: flex; align-items: center; gap: 6px; }
+  .scan-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .scan-btn.scanning { color: var(--warn); border-color: var(--warn); cursor: not-allowed; }
+
+  /* Peer list */
   .peer-list { flex: 1; overflow-y: auto; padding: 6px 0; }
   .peer-list::-webkit-scrollbar { width: 3px; }
   .peer-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-  .peer { display: flex; align-items: center; gap: 10px; padding: 8px 14px; cursor: pointer; border: 1px solid transparent; transition: background .1s, border-color .1s; }
-  .peer:hover { background: var(--border); }
+  .peer { display: flex; align-items: center; gap: 10px; padding: 8px 14px; cursor: pointer; border: 1px solid transparent; transition: background .1s, border-color .1s; position: relative; }
+  .peer:hover { background: rgba(255,255,255,.03); }
   .peer.sel { background: rgba(0,255,136,.06); border-color: rgba(0,255,136,.2); }
-  .avatar { width: 28px; height: 28px; border-radius: 6px; background: var(--border); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: var(--accent); flex-shrink: 0; text-transform: uppercase; }
+  .peer.plain-device { opacity: .7; }
+  .peer.plain-device:hover { opacity: 1; }
+
+  .avatar { width: 30px; height: 30px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; text-transform: uppercase; }
+  .avatar.p2p   { background: rgba(0,255,136,.12); color: var(--accent); border: 1px solid rgba(0,255,136,.25); }
+  .avatar.plain { background: var(--border); color: var(--muted); border: 1px solid transparent; }
+
   .pinfo { flex: 1; min-width: 0; }
   .pname { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pip { font-size: 10px; color: var(--muted); }
-  .ponline { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0; box-shadow: 0 0 4px var(--accent); }
+  .pmeta { font-size: 10px; color: var(--muted); margin-top: 1px; display: flex; align-items: center; gap: 5px; }
+  .p2p-tag { font-size: 9px; color: var(--accent); border: 1px solid rgba(0,255,136,.3); border-radius: 3px; padding: 0 4px; }
+  .plain-tag { font-size: 9px; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
 
-  .no-peers { padding: 24px 14px; text-align: center; color: var(--muted); font-size: 11px; line-height: 1.8; }
-  .no-peers-icon { font-size: 24px; margin-bottom: 8px; opacity: .3; }
+  .ponline { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+  .ponline.p2p   { background: var(--accent); box-shadow: 0 0 4px var(--accent); }
+  .ponline.plain { background: var(--muted); }
 
+  .no-peers { padding: 24px 14px; text-align: center; color: var(--muted); font-size: 11px; line-height: 1.9; }
+  .no-peers-icon { font-size: 22px; margin-bottom: 8px; opacity: .3; }
+
+  /* Stats */
   .stats-panel { border-top: 1px solid var(--border); padding: 10px 14px; }
-  .stats-label { font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .stats-label { font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 7px; }
   .stat-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
   .stat-row span:last-child { color: var(--text); }
 
-  /* ── Main ── */
+  /* Main */
   .main { display: flex; flex-direction: column; overflow: hidden; }
 
-  .dropzone { margin: 16px; border: 1px dashed var(--border); border-radius: 8px; padding: 28px 20px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; position: relative; }
+  /* Warning banner for plain devices */
+  .warn-banner { display: none; margin: 12px 16px 0; padding: 8px 12px; background: rgba(255,170,0,.07); border: 1px solid rgba(255,170,0,.25); border-radius: 6px; font-size: 11px; color: var(--warn); line-height: 1.6; }
+  .warn-banner.show { display: block; }
+
+  .dropzone { margin: 12px 16px 0; border: 1px dashed var(--border); border-radius: 8px; padding: 24px 20px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; position: relative; }
   .dropzone:hover, .dropzone.over { border-color: var(--accent); background: rgba(0,255,136,.03); }
   .dropzone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
-  .dz-icon { font-size: 28px; margin-bottom: 8px; opacity: .4; }
+  .dz-icon { font-size: 26px; margin-bottom: 6px; opacity: .4; }
   .dz-text { font-size: 12px; color: var(--muted); }
   .dz-text strong { color: var(--accent); }
-  .dz-hint { font-size: 10px; color: var(--muted); margin-top: 4px; opacity: .6; }
+  .dz-hint { font-size: 10px; color: var(--muted); margin-top: 3px; opacity: .6; }
 
-  .file-bar { display: none; align-items: center; gap: 10px; margin: 0 16px 12px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+  .file-bar { display: none; align-items: center; gap: 10px; margin: 8px 16px 0; padding: 9px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
   .file-bar.show { display: flex; }
   .fb-name { flex: 1; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .fb-size { font-size: 11px; color: var(--muted); white-space: nowrap; }
-  .fb-clear { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0 2px; transition: color .1s; }
+  .fb-clear { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
   .fb-clear:hover { color: var(--danger); }
-  .send-btn { background: var(--accent); color: #000; border: none; border-radius: 5px; padding: 6px 16px; font-family: var(--font); font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: opacity .15s, transform .1s; letter-spacing: .05em; }
+  .send-btn { background: var(--accent); color: #000; border: none; border-radius: 5px; padding: 6px 14px; font-family: var(--font); font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: opacity .15s; }
   .send-btn:hover { opacity: .85; }
-  .send-btn:active { transform: scale(.97); }
-  .send-btn:disabled { opacity: .3; cursor: not-allowed; }
+  .send-btn:disabled { opacity: .25; cursor: not-allowed; }
 
-  .log-header { padding: 0 16px 6px; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; justify-content: space-between; }
+  .log-header { padding: 10px 16px 5px; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; justify-content: space-between; }
   .log-clear-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 10px; font-family: var(--font); padding: 0; }
   .log-clear-btn:hover { color: var(--text); }
 
@@ -93,32 +117,34 @@
   .log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   .log-empty { color: var(--muted); font-size: 11px; padding: 16px 0; text-align: center; opacity: .5; }
 
-  .transfer { display: grid; grid-template-columns: 16px 1fr auto; gap: 8px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--border); animation: fadeIn .2s ease; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .transfer { display: grid; grid-template-columns: 16px 1fr auto; gap: 8px; align-items: start; padding: 9px 0; border-bottom: 1px solid var(--border); animation: fadeIn .2s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
   .t-icon { font-size: 12px; padding-top: 1px; }
   .t-body { min-width: 0; }
   .t-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .t-meta { font-size: 10px; color: var(--muted); margin-top: 2px; }
   .t-enc  { font-size: 9px; color: var(--accent); opacity: .6; margin-left: 6px; }
   .t-status { font-size: 10px; white-space: nowrap; padding-top: 2px; text-align: right; }
-
-  .pbar { margin-top: 6px; height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
+  .pbar { margin-top: 5px; height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
   .pfill { height: 100%; border-radius: 1px; background: var(--accent); transition: width .3s ease; }
   .pfill.recv { background: var(--blue); }
 
-  .c-send { color: var(--accent); }
-  .c-recv { color: var(--blue); }
-  .c-done { color: var(--muted); }
-  .c-fail { color: var(--danger); }
-  .c-warn { color: var(--warn); }
+  .c-send { color: var(--accent); } .c-recv { color: var(--blue); }
+  .c-done { color: var(--muted); } .c-fail { color: var(--danger); } .c-warn { color: var(--warn); }
 
   .toast-wrap { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 100; }
-  .toast { padding: 10px 14px; border-radius: 6px; font-size: 11px; background: var(--surface); border: 1px solid var(--border); max-width: 280px; animation: toastIn .2s ease; box-shadow: 0 4px 24px rgba(0,0,0,.5); }
-  @keyframes toastIn { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
+  .toast { padding: 9px 13px; border-radius: 6px; font-size: 11px; background: var(--surface); border: 1px solid var(--border); max-width: 280px; animation: toastIn .2s ease; box-shadow: 0 4px 20px rgba(0,0,0,.5); }
+  @keyframes toastIn { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; } }
   .toast.ok   { border-color: rgba(0,255,136,.4);  color: var(--accent); }
   .toast.err  { border-color: rgba(255,68,68,.4);   color: var(--danger); }
   .toast.warn { border-color: rgba(255,170,0,.4);    color: var(--warn); }
-  .toast.info { border-color: var(--border);          color: var(--text); }
+  .toast.info { color: var(--text); }
+
+  /* Scan progress bar */
+  .scan-progress { height: 2px; background: var(--border); position: relative; overflow: hidden; display: none; }
+  .scan-progress.show { display: block; }
+  .scan-progress-fill { position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: var(--warn); animation: scanSlide 1.5s linear infinite; }
+  @keyframes scanSlide { from { left: -100%; } to { left: 100%; } }
 </style>
 </head>
 <body>
@@ -129,6 +155,7 @@
     <div class="logo">P2P·Share</div>
     <div class="top-info"><span id="myName">—</span> &nbsp;·&nbsp; <span id="myIp">—</span></div>
     <span class="enc-pill">🔒 AES-256-GCM</span>
+    <span class="scan-badge" id="scanBadge">⟳ scanning LAN...</span>
     <div class="top-status">
       <div class="dot" id="wsDot"></div>
       <span id="wsLabel">connecting</span>
@@ -137,26 +164,59 @@
 
   <!-- Sidebar -->
   <aside class="sidebar">
-    <div class="sh">Peers <span class="badge" id="peerCount">0</span></div>
-    <div class="peer-list" id="peerList">
-      <div class="no-peers"><div class="no-peers-icon">◎</div>Waiting for peers<br>on the LAN…</div>
+    <div class="sh">
+      Devices on LAN
+      <div class="sh-counts">
+        <span class="badge badge-p2p" id="p2pCount">0 p2p</span>
+        <span class="badge badge-all" id="allCount">0 total</span>
+      </div>
     </div>
+
+    <!-- Scan progress -->
+    <div class="scan-progress" id="scanProgress"><div class="scan-progress-fill"></div></div>
+
+    <!-- Filter tabs -->
+    <div class="filter-tabs">
+      <div class="tab active" id="tabAll"    onclick="setFilter('all')">All devices</div>
+      <div class="tab"        id="tabP2P"    onclick="setFilter('p2p')">P2P only</div>
+    </div>
+
+    <!-- Rescan button -->
+    <button class="scan-btn" id="scanBtn" onclick="requestScan()">
+      <span>⟳</span> Rescan network
+    </button>
+
+    <div class="peer-list" id="peerList">
+      <div class="no-peers">
+        <div class="no-peers-icon">◉</div>
+        Scanning LAN…<br>
+        <span style="font-size:10px;opacity:.5">Looking for all devices on your network</span>
+      </div>
+    </div>
+
     <div class="stats-panel">
       <div class="stats-label">Session</div>
       <div class="stat-row"><span>sent</span>      <span id="sSent">0 files</span></div>
       <div class="stat-row"><span>received</span>  <span id="sRecv">0 files</span></div>
-      <div class="stat-row"><span>failed</span>    <span id="sFail">0</span></div>
       <div class="stat-row"><span>peak speed</span><span id="sSpeed">—</span></div>
     </div>
   </aside>
 
   <!-- Main -->
   <main class="main">
+
+    <!-- Warning banner for non-p2p device selected -->
+    <div class="warn-banner" id="warnBanner">
+      ⚠ This device doesn't have P2P Share installed.<br>
+      You can only send files to devices that are running this app.
+      <span style="color:var(--text);opacity:.7"> Install it on the other machine first.</span>
+    </div>
+
     <div class="dropzone" id="dropzone">
       <input type="file" id="fileInput">
       <div class="dz-icon">⊕</div>
       <div class="dz-text"><strong>Click to pick a file</strong> or drag here</div>
-      <div class="dz-hint">Select a peer on the left first</div>
+      <div class="dz-hint">Select a P2P-capable device on the left to enable sending</div>
     </div>
 
     <div class="file-bar" id="fileBar">
@@ -180,12 +240,12 @@
 
 <script>
 const WS_URL = `ws://${location.hostname}:7777`;
-
-let ws = null, peers = [], selPeer = null, selFile = null;
+let ws = null, devices = [], selPeer = null, selFile = null, currentFilter = 'all';
 const activeTransfers = new Map();
 let wsTimer = null;
 
 const el = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connect() {
@@ -203,71 +263,133 @@ function handle({ type, data }) {
       el('myName').textContent = data.name;
       el('myIp').textContent   = data.ip;
       break;
+
     case 'peers':
-      peers = data; renderPeers(); break;
+      devices = data;
+      renderDevices();
+      break;
+
     case 'peer:new':
-      if (!peers.find(p => p.ip === data.ip)) peers.push(data);
-      renderPeers(); toast(`${data.name} joined`, 'info'); break;
+      if (!devices.find(d => d.ip === data.ip)) devices.push(data);
+      renderDevices();
+      toast(`${data.name} (${data.p2pCapable ? 'P2P' : 'device'}) found @ ${data.ip}`, 'info');
+      break;
+
+    case 'peer:update':
+      { const i = devices.findIndex(d => d.ip === data.ip);
+        if (i >= 0) devices[i] = data; else devices.push(data);
+        renderDevices(); }
+      break;
+
     case 'peer:lost':
-      peers = peers.filter(p => p.ip !== data.ip);
-      if (selPeer?.ip === data.ip) { selPeer = null; updateSend(); }
-      renderPeers(); toast(`${data.name} left`, 'warn'); break;
-    case 'job:queued':
-      addXfer(data.id, data.filename, data.peer, 'send'); break;
-    case 'job:progress':
-      updateXfer(data.id, data.percent, data.speedMBps, 'send'); break;
-    case 'job:done':
-      doneXfer(data.id, `✓ ${data.durationMs}ms`, 'done', '↑');
-      toast(`"${data.filename}" sent`, 'ok'); break;
-    case 'job:failed':
-      doneXfer(data.id, `✗ after ${data.attempts} tries`, 'fail', '↑');
-      toast(`"${data.filename}" failed`, 'err'); break;
-    case 'job:retrying':
-      metaXfer(data.id, `retrying (${data.attempt}/${data.maxAttempts})`, 'warn'); break;
-    case 'transfer:start':
-      addXfer('r-' + data.filename, data.filename, data.from, 'recv', data.encrypted); break;
-    case 'transfer:progress': {
-      const e2 = findXferByName(data.filename, 'recv');
-      if (e2) updateXferEl(e2, data.percent, null, 'recv'); break;
-    }
-    case 'transfer:done': {
-      const e2 = findXferByName(data.filename, 'recv');
-      if (e2) doneXferEl(e2, `✓ ${data.durationMs}ms`, 'done', '↓');
-      toast(`"${data.filename}" received`, 'ok'); break;
-    }
-    case 'transfer:error': {
-      const e2 = findXferByName(data.filename, 'recv');
-      if (e2) doneXferEl(e2, data.reason, 'fail', '↓');
-      toast(`"${data.filename}" receive failed`, 'err'); break;
-    }
+      devices = devices.filter(d => d.ip !== data.ip);
+      if (selPeer?.ip === data.ip) { selPeer = null; updateUI(); }
+      renderDevices();
+      toast(`${data.name} went offline`, 'warn');
+      break;
+
+    case 'scan:start':
+      el('scanProgress').classList.add('show');
+      el('scanBadge').classList.add('show');
+      el('scanBtn').classList.add('scanning');
+      el('scanBtn').textContent = '⟳ Scanning…';
+      break;
+
+    case 'scan:complete':
+      el('scanProgress').classList.remove('show');
+      el('scanBadge').classList.remove('show');
+      el('scanBtn').classList.remove('scanning');
+      el('scanBtn').innerHTML = '<span>⟳</span> Rescan network';
+      toast(`Scan complete — ${data.total} device(s) on LAN`, 'info');
+      break;
+
+    case 'job:queued':    addXfer(data.id, data.filename, data.peer, 'send'); break;
+    case 'job:progress':  updateXfer(data.id, data.percent, data.speedMBps, 'send'); break;
+    case 'job:done':      doneXfer(data.id, `✓ ${data.durationMs}ms`, 'done', '↑'); toast(`"${data.filename}" sent`, 'ok'); break;
+    case 'job:failed':    doneXfer(data.id, `✗ ${data.attempts} tries`, 'fail', '↑'); toast(`"${data.filename}" failed`, 'err'); break;
+    case 'job:retrying':  metaXfer(data.id, `retrying (${data.attempt}/${data.maxAttempts})`, 'warn'); break;
+
+    case 'transfer:start': addXfer('r-'+data.filename, data.filename, data.from, 'recv', data.encrypted); break;
+    case 'transfer:progress': { const e2 = findXfer(data.filename, 'recv'); if (e2) updateXferEl(e2, data.percent, null, 'recv'); break; }
+    case 'transfer:done':  { const e2 = findXfer(data.filename, 'recv'); if (e2) doneXferEl(e2, `✓ ${data.durationMs}ms`, 'done', '↓'); toast(`"${data.filename}" received`, 'ok'); break; }
+    case 'transfer:error': { const e2 = findXfer(data.filename, 'recv'); if (e2) doneXferEl(e2, data.reason, 'fail', '↓'); break; }
     case 'stats': updateStats(data); break;
   }
 }
 
-// ── Peers ─────────────────────────────────────────────────────────────────────
-function renderPeers() {
-  el('peerCount').textContent = peers.length;
-  if (!peers.length) {
-    el('peerList').innerHTML = '<div class="no-peers"><div class="no-peers-icon">◎</div>Waiting for peers<br>on the LAN…</div>';
-    return;
-  }
-  el('peerList').innerHTML = peers.map(p => `
-    <div class="peer ${selPeer?.ip === p.ip ? 'sel' : ''}" onclick="pickPeer('${p.ip}')">
-      <div class="avatar">${esc(p.name[0])}</div>
-      <div class="pinfo">
-        <div class="pname">${esc(p.name)}</div>
-        <div class="pip">${p.ip}</div>
-      </div>
-      <div class="ponline"></div>
-    </div>`).join('');
+// ── Filter ────────────────────────────────────────────────────────────────────
+function setFilter(f) {
+  currentFilter = f;
+  el('tabAll').classList.toggle('active', f === 'all');
+  el('tabP2P').classList.toggle('active', f === 'p2p');
+  renderDevices();
 }
 
-function pickPeer(ip) { selPeer = peers.find(p => p.ip === ip) || null; renderPeers(); updateSend(); }
+// ── Render all LAN devices ────────────────────────────────────────────────────
+function renderDevices() {
+  const p2pDevices   = devices.filter(d => d.p2pCapable);
+  const plainDevices = devices.filter(d => !d.p2pCapable);
+
+  el('p2pCount').textContent = `${p2pDevices.length} p2p`;
+  el('allCount').textContent = `${devices.length} total`;
+
+  const filtered = currentFilter === 'p2p' ? p2pDevices : devices;
+
+  if (filtered.length === 0) {
+    el('peerList').innerHTML = `
+      <div class="no-peers">
+        <div class="no-peers-icon">◉</div>
+        ${currentFilter === 'p2p' ? 'No P2P devices found yet.<br><span style="font-size:10px;opacity:.5">Install this app on another machine.</span>' : 'No devices found yet.<br><span style="font-size:10px;opacity:.5">Scanning LAN…</span>'}
+      </div>`;
+    return;
+  }
+
+  // Sort: p2p first, then plain
+  const sorted = [...filtered].sort((a, b) => {
+    if (a.p2pCapable && !b.p2pCapable) return -1;
+    if (!a.p2pCapable && b.p2pCapable) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  el('peerList').innerHTML = sorted.map(d => {
+    const isSel   = selPeer?.ip === d.ip;
+    const isP2P   = d.p2pCapable;
+    const initial = (d.name || d.ip)[0].toUpperCase();
+    return `
+      <div class="peer ${isSel ? 'sel' : ''} ${!isP2P ? 'plain-device' : ''}"
+           onclick="pickDevice('${d.ip}')">
+        <div class="avatar ${isP2P ? 'p2p' : 'plain'}">${esc(initial)}</div>
+        <div class="pinfo">
+          <div class="pname">${esc(d.name || d.ip)}</div>
+          <div class="pmeta">
+            <span>${d.ip}</span>
+            ${isP2P
+              ? `<span class="p2p-tag">P2P ✓</span>`
+              : `<span class="plain-tag">no app</span>`}
+          </div>
+        </div>
+        <div class="ponline ${isP2P ? 'p2p' : 'plain'}"></div>
+      </div>`;
+  }).join('');
+}
+
+function pickDevice(ip) {
+  selPeer = devices.find(d => d.ip === ip) || null;
+  renderDevices();
+  updateUI();
+}
+
+function updateUI() {
+  // Show warning if selected device is not p2p capable
+  const showWarn = selPeer && !selPeer.p2pCapable;
+  el('warnBanner').classList.toggle('show', !!showWarn);
+  el('sendBtn').disabled = !(selPeer?.p2pCapable && selFile);
+}
 
 // ── File pick ─────────────────────────────────────────────────────────────────
 el('fileInput').addEventListener('change', () => { if (el('fileInput').files[0]) setFile(el('fileInput').files[0]); });
 const dz = el('dropzone');
-dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('over'));
 dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
 
@@ -276,29 +398,32 @@ function setFile(f) {
   el('fbName').textContent = f.name;
   el('fbSize').textContent = fmt(f.size);
   el('fileBar').classList.add('show');
-  updateSend();
+  updateUI();
 }
 
-el('fbClear').addEventListener('click', () => { selFile = null; el('fileInput').value = ''; el('fileBar').classList.remove('show'); updateSend(); });
-function updateSend() { el('sendBtn').disabled = !(selPeer && selFile); }
+el('fbClear').addEventListener('click', () => { selFile = null; el('fileInput').value = ''; el('fileBar').classList.remove('show'); updateUI(); });
 
 // ── Send ──────────────────────────────────────────────────────────────────────
 el('sendBtn').addEventListener('click', () => {
-  if (!selPeer || !selFile || ws?.readyState !== 1) return;
+  if (!selPeer?.p2pCapable || !selFile || ws?.readyState !== 1) return;
   ws.send(JSON.stringify({ action: 'send', peerIp: selPeer.ip, peerPort: selPeer.tcpPort, filename: selFile.name }));
   toast(`Queuing "${selFile.name}" → ${selPeer.name}`, 'info');
 });
+
+// ── Rescan ────────────────────────────────────────────────────────────────────
+function requestScan() {
+  if (el('scanBtn').classList.contains('scanning')) return;
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ action: 'scan' }));
+}
 
 // ── Transfer log ──────────────────────────────────────────────────────────────
 function addXfer(id, name, peer, dir, encrypted = false) {
   el('logEmpty').style.display = 'none';
   const div = document.createElement('div');
   div.className = 'transfer';
-  div.dataset.id  = id;
-  div.dataset.name = name;
-  div.dataset.dir  = dir;
+  div.dataset.id = id; div.dataset.name = name; div.dataset.dir = dir;
+  const cls = dir === 'send' ? 'c-send' : 'c-recv';
   const icon = dir === 'send' ? '↑' : '↓';
-  const cls  = dir === 'send' ? 'c-send' : 'c-recv';
   const encTag = encrypted ? `<span class="t-enc">🔒</span>` : '';
   div.innerHTML = `
     <div class="t-icon ${cls}">${icon}</div>
@@ -321,7 +446,6 @@ function updateXferEl(e2, pct, spd, dir) {
 function metaXfer(id, txt, cls) {
   const e2 = activeTransfers.get(String(id)); if (!e2) return;
   const m = e2.querySelector('.t-meta'); if (m) m.textContent = txt;
-  const s = e2.querySelector('.t-status'); if (s) s.className = `t-status c-${cls}`;
 }
 function doneXfer(id, txt, cls, icon) { const e2 = activeTransfers.get(String(id)); if (e2) doneXferEl(e2, txt, cls, icon); }
 function doneXferEl(e2, txt, cls, icon) {
@@ -330,7 +454,7 @@ function doneXferEl(e2, txt, cls, icon) {
   const i = e2.querySelector('.t-icon'); if (i) { i.textContent = icon; i.className = `t-icon c-${cls}`; }
   for (const [k, v] of activeTransfers) if (v === e2) { activeTransfers.delete(k); break; }
 }
-function findXferByName(name, dir) {
+function findXfer(name, dir) {
   for (const e2 of el('log').querySelectorAll('.transfer'))
     if (e2.dataset.name === name && e2.dataset.dir === dir) return e2;
   return null;
@@ -346,7 +470,6 @@ el('logClear').addEventListener('click', () => {
 function updateStats(s) {
   el('sSent').textContent  = `${s.sent} files`;
   el('sRecv').textContent  = `${s.received} files`;
-  el('sFail').textContent  = `${s.failed}`;
   el('sSpeed').textContent = s.peakSpeedMBps ? `${s.peakSpeedMBps} MB/s` : '—';
 }
 
@@ -366,7 +489,7 @@ function fmt(b) {
   if (b < 1024**3)   return (b/(1024*1024)).toFixed(1) + ' MB';
   return (b/1024**3).toFixed(2) + ' GB';
 }
-function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function esc(s) { return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 connect();
 </script>
